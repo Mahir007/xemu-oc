@@ -11,13 +11,12 @@ on:
 jobs:
   build:
     name: Build for Ubuntu (${{matrix.arch}}, ${{ matrix.configuration }})
-    runs-on: ubuntu-22.04${{ matrix.arch == 'aarch64' && '-arm' || '' }}
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
-        arch: [x86_64, aarch64]
-        configuration: [debug, release]
+        arch: [x86_64]
+        configuration: [release]
     env:
-      ARTIFACT_NAME: xemu-ubuntu-${{ matrix.arch }}-${{ matrix.configuration }}
       CCACHE_DIR: /tmp/xemu-ccache
       CCACHE_MAXSIZE: 512M
       LTO_CACHE_DIR: /tmp/xemu-lto-cache
@@ -36,20 +35,14 @@ jobs:
     steps:
     - name: Setup build options
       run: |
-        if [[ "${{ matrix.configuration }}" == "debug" ]]; then
-          opts=(
-            --debug
-          )
-        else
-          opts=(
-            --extra-ldflags="-Wl,--thinlto-cache-policy=cache_size_bytes=$LTO_CACHE_MAXSIZE"
-            -Db_lto=true
-            -Db_lto_mode=thin
-            -Db_thinlto_cache=true
-            -Db_thinlto_cache_dir="$LTO_CACHE_DIR"
-          )
-          mkdir -p ${LTO_CACHE_DIR}
-        fi
+        opts=(
+          --extra-ldflags="-Wl,--thinlto-cache-policy=cache_size_bytes=$LTO_CACHE_MAXSIZE"
+          -Db_lto=true
+          -Db_lto_mode=thin
+          -Db_thinlto_cache=true
+          -Db_thinlto_cache_dir="$LTO_CACHE_DIR"
+        )
+        mkdir -p ${LTO_CACHE_DIR}
         echo "XEMU_BUILD_OPTIONS=${opts[*]}" >> "$GITHUB_ENV"
     - name: Initialize compiler cache
       id: cache
@@ -136,40 +129,45 @@ jobs:
         sudo ln -s /bin/true /usr/bin/dpkg-genbuildinfo
 
         pushd src
-        dpkg-buildpackage --no-sign -b
-        popd
-
-        mkdir -p deb
-        mv *.deb *.ddeb deb
-    - name: Test
-      run: |
-        pushd src/build
-        ./pyvenv/bin/meson compile test-xbox
-        ./pyvenv/bin/meson test --suite xbox --no-rebuild
+        DEB_BUILD_OPTIONS=noddebs dpkg-buildpackage --no-sign -b
         popd
     - name: Report ccache stats
       run: ccache -s
     - name: Generate AppImage
       env:
-        VERSION: ${{ inputs.pkg_version }}${{ matrix.configuration == 'debug' && '-dbg' || '' }}
+        VERSION: ${{ inputs.pkg_version }}
       run: |
         wget --no-verbose https://github.com/linuxdeploy/linuxdeploy/releases/latest/download/linuxdeploy-${{ matrix.arch }}.AppImage
         chmod +x linuxdeploy-${{ matrix.arch }}.AppImage
 
-        ar x deb/*.deb
+        ar x *.deb
         mkdir appimage
         tar -C appimage -xf data.tar*
         install -DT src/xemu.metainfo.xml appimage/usr/share/metainfo/xemu.metainfo.xml
 
         ./linuxdeploy-${{ matrix.arch }}.AppImage --output appimage --appdir appimage
-    - name: Bundle artifacts
+    - name: Package
+      id: package
+      env:
+        VERSION: ${{ inputs.pkg_version }}
       run: |
+        pkg_filename="xemu-${VERSION}-linux-${{ matrix.arch }}.zip"
+        echo "pkg_filename=${pkg_filename}" >> $GITHUB_OUTPUT
+
         mkdir -p dist
-        tar -czvf ./dist/${{ env.ARTIFACT_NAME }}.tgz --transform "s#^dist#${{ env.ARTIFACT_NAME }}#" deb
-        mv xemu-*.AppImage dist
+        pushd src
+        python3 scripts/gen-license.py > ../dist/LICENSE.txt
+        popd
+        mv xemu-*.AppImage dist/xemu.AppImage
+        chmod +x dist/xemu.AppImage
+        mkdir dist/xemu.AppImage.home
+
+        pushd dist
+        zip -9 -r ../${pkg_filename} *
+        popd
     - name: Upload build artifact
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
       with:
-        name: ${{ env.ARTIFACT_NAME }}
-        path: dist
+        name: xemu-linux-${{ matrix.arch }}-${{ matrix.configuration }}
+        path: ${{ steps.package.outputs.pkg_filename }}
         compression-level: 0

@@ -14,8 +14,8 @@ jobs:
     runs-on: macos-15
     strategy:
       matrix:
-        arch: [x86_64, arm64]
-        configuration: [debug, release]
+        arch: [arm64]
+        configuration: [release]
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
@@ -56,19 +56,13 @@ jobs:
         ccache -z
     - name: Setup build options
       run: |
-        if [[ "${{ matrix.configuration }}" == "debug" ]]; then
-          opts=(
-            --debug
-          )
-        else
-          opts=(
-            -Db_lto=true
-            -Db_lto_mode=thin
-            -Db_thinlto_cache=true
-            -Db_thinlto_cache_dir="$LTO_CACHE_DIR"
-          )
-          mkdir -p ${LTO_CACHE_DIR}
-        fi
+        opts=(
+          -Db_lto=true
+          -Db_lto_mode=thin
+          -Db_thinlto_cache=true
+          -Db_thinlto_cache_dir="$LTO_CACHE_DIR"
+        )
+        mkdir -p ${LTO_CACHE_DIR}
         echo "XEMU_BUILD_OPTIONS=${opts[*]}" >> "$GITHUB_ENV"
     - name: Compile
       run: ./build.sh -a ${{ matrix.arch }} ${XEMU_BUILD_OPTIONS}
@@ -77,58 +71,19 @@ jobs:
     - name: Package
       id: package
       env:
-        VERSION: ${{ inputs.pkg_version }}${{ matrix.configuration == 'debug' && '-dbg' || '' }}
+        VERSION: ${{ inputs.pkg_version }}
       run: |
         pkg_filename="xemu-${VERSION}-macos-${{ matrix.arch }}-unsigned.zip"
         echo "pkg_filename=${pkg_filename}" >> $GITHUB_OUTPUT
 
+        touch dist/xemu.app/Contents/Resources/xemu.toml
+
         pushd dist
-        zip -r ../${pkg_filename} *
+        zip -9 -r ../${pkg_filename} *
         popd
     - name: Upload build artifact
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
       with:
         name: xemu-macos-${{ matrix.arch }}-${{ matrix.configuration }}
-        path: ${{ steps.package.outputs.pkg_filename }}
-        compression-level: 0
-
-  build_universal:
-    name: Build macOS Universal bundle (${{ matrix.configuration }})
-    runs-on: macos-15
-    needs: build
-    strategy:
-      matrix:
-        configuration: [debug, release]
-    steps:
-    - name: Download architecture-specific builds
-      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4
-      with:
-        pattern: "xemu-macos-*-${{ matrix.configuration }}"
-        merge-multiple: true
-    - name: Build Universal bundle
-      run: |
-        mkdir dist
-        pushd dist
-        for arch in x86_64 arm64; do
-          unzip -o ../xemu-*-${arch}-unsigned.zip
-          mv xemu.app/Contents/MacOS/xemu ../xemu_${arch}
-        done
-        lipo -create -output xemu.app/Contents/MacOS/xemu ../xemu_x86_64 ../xemu_arm64
-        codesign --force --deep --preserve-metadata=entitlements,requirements,flags,runtime --sign - xemu.app/Contents/MacOS/xemu
-        popd
-    - name: Package
-      id: package
-      env:
-        VERSION: ${{ inputs.pkg_version }}${{ matrix.configuration == 'debug' && '-dbg' || '' }}
-      run: |
-        pkg_filename="xemu-${VERSION}-macos-universal-unsigned.zip"
-        echo "pkg_filename=${pkg_filename}" >> $GITHUB_OUTPUT
-        pushd dist
-        zip -r ../${pkg_filename} *
-        popd
-    - name: Upload build artifact
-      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
-      with:
-        name: xemu-macos-universal-${{ matrix.configuration }}
         path: ${{ steps.package.outputs.pkg_filename }}
         compression-level: 0

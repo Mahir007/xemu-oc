@@ -11,11 +11,6 @@ on:
         description: "Tag name for the release"
         required: true
         type: string
-      pre-release:
-        description: "Create as published pre-release instead of draft release"
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   build:
@@ -24,49 +19,60 @@ jobs:
     with:
       ref: ${{ inputs.ref }}
 
-  delete_prerelease:
-    name: Delete pre-release
-    needs: build
-    if: ${{ inputs.pre-release }}
-    uses: ./.github/workflows/delete-prerelease.yml
-
   release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build, delete_prerelease]
+    needs: [build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     steps:
-    - name: Clone tree
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      with:
-        fetch-depth: 0
-        ref: ${{ inputs.ref }}
-    - name: Generate release notes
+    - name: Compute upstream version info
+      id: upstream
       env:
         GH_TOKEN: ${{ github.token }}
-      run: python3 .github/scripts/gen-changelog.py --ref ${{ inputs.ref }} -o CHANGELOG.md
+      run: |
+        upstream_tag="${{ inputs.tag }}"
+        upstream_tag="${upstream_tag%-oc}"
+        echo "tag=${upstream_tag}" >> $GITHUB_OUTPUT
+
+        echo "short_sha=$(echo "${{ github.sha }}" | cut -c1-7)" >> $GITHUB_OUTPUT
+
+        prev_release=$(gh release list --repo "${{ github.repository }}" \
+          --limit 10 --json tagName --jq '.[].tagName' \
+          | grep -- '-oc$' \
+          | grep -v "^${{ inputs.tag }}$" \
+          | head -n 1)
+        prev_tag="${prev_release%-oc}"
+        echo "prev_tag=${prev_tag}" >> $GITHUB_OUTPUT
     - name: Download artifacts
       uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4
       with:
         path: dist
         merge-multiple: true
-    - name: Add transitionary package aliases
-      if: ${{ !inputs.pre-release }}
-      run: |
-        pushd dist
-        cp xemu-${{ needs.build.outputs.pkg_version }}-windows-x86_64.zip xemu-win-x86_64-release.zip
-        cp xemu-${{ needs.build.outputs.pkg_version }}-windows-arm64.zip xemu-win-aarch64-release.zip
     - name: Create release
       uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
       with:
-        name: ${{ inputs.pre-release && 'Latest Development Build' || inputs.tag }}
+        name: ${{ inputs.tag }}
         tag_name: ${{ inputs.tag }}
-        target_commitish: ${{ inputs.pre-release && inputs.ref || '' }}
-        body_path: CHANGELOG.md
-        draft: ${{ !inputs.pre-release }}
-        prerelease: ${{ inputs.pre-release }}
+        draft: false
+        prerelease: false
+        body: |
+          ## Custom xemu-oc build
+          [${{ steps.upstream.outputs.tag }}](https://github.com/xemu-project/xemu/releases/tag/${{ steps.upstream.outputs.tag }}) with the following PR applied on top:
+
+          - [xemu-project/xemu#2028](https://github.com/xemu-project/xemu/pull/2028) - UX: Add CPU overclock and display rate override settings
+            - Adds configurable CPU clock and display rate overrides to the settings UI
+            - Can improve framerates in many games that benefit from running above 30/60 FPS
+
+          > [!WARNING]
+          > **Use at your own risk.** Games with FPS-dependent physics may break with these overrides enabled.
+          >
+          > - **Do NOT report bugs caused by this build to the upstream xemu project!**
+          > This is an unofficial fork and any issues should not be filed on the main xemu repository.
+          > - This build is provided as-is with no support. I am not able to help with issues you encounter.
+
+          Built from commit: [`${{ steps.upstream.outputs.short_sha }}`](https://github.com/Mahir007/xemu-oc/commit/${{ github.sha }})
+          Full upstream changelog: [${{ steps.upstream.outputs.prev_tag }}...${{ steps.upstream.outputs.tag }}](https://github.com/xemu-project/xemu/compare/${{ steps.upstream.outputs.prev_tag }}...${{ steps.upstream.outputs.tag }})
         files: |
-          dist/xemu*.tar.zst
           dist/xemu*-win*.zip
-          dist/xemu*-macos-universal*.zip
-          dist/xemu*.AppImage
+          dist/xemu*-macos-arm64*.zip
+          dist/xemu*-linux*.zip

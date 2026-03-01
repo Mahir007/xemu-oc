@@ -44,7 +44,7 @@ jobs:
         ./scripts/archive-source.sh ${tar_filename} ${tar_prefix}
 
         echo -n ${{ github.sha }} > XEMU_COMMIT
-        echo -n ${{ steps.version.outputs.pkg_version }} > XEMU_VERSION
+        echo -n "$(echo ${{ steps.version.outputs.pkg_version }} | sed 's/-/./')" > XEMU_VERSION
         tar -r --file "${tar_filename}" --transform "s,^./,${tar_prefix}," ./XEMU_COMMIT ./XEMU_VERSION
 
         zstd "${tar_filename}"
